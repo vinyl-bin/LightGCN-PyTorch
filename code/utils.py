@@ -4,6 +4,12 @@ Pytorch Implementation of LightGCN in
 Xiangnan He et al. LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation
 
 @author: Jianbai Ye (gusye@mail.ustc.edu.cn)
+
+이 파일은 LightGCN 추천 시스템의 핵심 유틸리티 함수들을 포함합니다:
+- BPR 손실 함수 클래스
+- 네거티브 샘플링 함수
+- 평가 메트릭 (Recall, Precision, NDCG, MRR, AUC)
+- 유틸리티 함수 (시드 설정, 배치 처리, 타이머 등)
 '''
 import world
 import torch
@@ -17,37 +23,42 @@ from model import PairWiseModel
 from sklearn.metrics import roc_auc_score
 import random
 import os
+# C++ 확장 모듈 로드 시도, cppimport를 사용해서 .cpp 파일을 즉석에서 컴파일
+# 수백만 개의 negative samples를 생성해야 함
+# Python의 for 루프는 매우 느림
+# C++는 10~100배 빠름
+# 학습 시간을 크게 단축
 try:
     from cppimport import imp_from_filepath
     from os.path import join, dirname
     path = join(dirname(__file__), "sources/sampling.cpp")
-    sampling = imp_from_filepath(path)
-    sampling.seed(world.seed)
-    sample_ext = True
+    sampling = imp_from_filepath(path)  # C++ 샘플링 함수 로드
+    sampling.seed(world.seed)  # 랜덤 시드 설정
+    sample_ext = True  # C++ 확장 사용 가능
 except:
-    world.cprint("Cpp extension not loaded")
-    sample_ext = False
+    world.cprint("Cpp extension not loaded")  # C++ 확장 로드 실패
+    sample_ext = False  # Python 구현 사용
 
-
+# BPR (Bayesian Personalized Ranking) 손실 함수 클래스
 class BPRLoss:
     def __init__(self,
                  recmodel : PairWiseModel,
                  config : dict):
         self.model = recmodel
-        self.weight_decay = config['decay']
-        self.lr = config['lr']
-        self.opt = optim.Adam(recmodel.parameters(), lr=self.lr)
+        self.weight_decay = config['decay']  # 가중치 감쇠 (L2 정규화)
+        self.lr = config['lr']  # 학습률
+        self.opt = optim.Adam(recmodel.parameters(), lr=self.lr)  # Adam optimizer
 
     def stageOne(self, users, pos, neg):
-        loss, reg_loss = self.model.bpr_loss(users, pos, neg)
-        reg_loss = reg_loss*self.weight_decay
-        loss = loss + reg_loss
+        loss, reg_loss = self.model.bpr_loss(users, pos, neg)  # BPR 손실 계산
+        reg_loss = reg_loss*self.weight_decay  # 정규화 항에 가중치 적용
+        loss = loss + reg_loss  # 총 손실 = BPR 손실 + 정규화 손실
 
-        self.opt.zero_grad()
-        loss.backward()
-        self.opt.step()
+        self.opt.zero_grad()  # 그래디언트 초기화
+        loss.backward()  # 역전파
+        self.opt.step()  # 파라미터 업데이트
 
-        return loss.cpu().item()
+        return loss.cpu().item()  # 손실 값 반환
 
 
 def UniformSample_original(dataset, neg_ratio = 1):
