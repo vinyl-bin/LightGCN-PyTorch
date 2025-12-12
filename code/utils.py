@@ -66,9 +66,11 @@ def UniformSample_original(dataset, neg_ratio = 1):
     allPos = dataset.allPos
     start = time()
     if sample_ext:
+         # C++ 확장 가능해서 C++로 샘플링
         S = sampling.sample_negative(dataset.n_users, dataset.m_items,
                                      dataset.trainDataSize, allPos, neg_ratio)
     else:
+        # C++ 확장 불가능해서 Python으로 샘플링
         S = UniformSample_original_python(dataset)
     return S
 
@@ -81,25 +83,34 @@ def UniformSample_original_python(dataset):
     total_start = time()
     dataset : BasicDataset
     user_num = dataset.trainDataSize
+    # 랜덤 유저 샘플링(선택)
+    # 매개변수 : low, high, size -> low ~ high-1 사이의 정수를 size만큼 랜덤으로 선택
     users = np.random.randint(0, dataset.n_users, user_num)
+    # 모든 유저의 positive item 리스트
     allPos = dataset.allPos
     S = []
     sample_time1 = 0.
     sample_time2 = 0.
+    # enumerate : 인덱스와 값 동시 반환
     for i, user in enumerate(users):
         start = time()
+        # 해당 유저가 좋아하는 item 리스트
         posForUser = allPos[user]
         if len(posForUser) == 0:
             continue
         sample_time2 += time() - start
+        # 0부터 len(posForUser)-1 사이의 정수를 랜덤으로 선택 
         posindex = np.random.randint(0, len(posForUser))
+        # 유저가 좋아한 item 중 하나 랜덤 선택
         positem = posForUser[posindex]
         while True:
+            # 전체 데이터 중 랜덤으로 하나 선택해서 negative_item이 아니면 다시 선택, negative_item이면 break
             negitem = np.random.randint(0, dataset.m_items)
             if negitem in posForUser:
                 continue
             else:
                 break
+        # 유저, positive_item, negative_item 순서로 리스트에 추가
         S.append([user, positem, negitem])
         end = time()
         sample_time1 += end - start
@@ -109,35 +120,52 @@ def UniformSample_original_python(dataset):
 # ===================end samplers==========================
 # =====================utils====================================
 
+# 랜덤 시드 고정 함수 -> 같은 seed이면 항상 같은 결과를 얻음 -> 실험 재현성 확보
 def set_seed(seed):
+    # numpy의 random seed 고정
     np.random.seed(seed)
+
+    # GPU 사용가능하면
     if torch.cuda.is_available():
+        # 현재 GPU의 random seed 고정
         torch.cuda.manual_seed(seed)
+        # 모든 GPU의 random seed 고정
         torch.cuda.manual_seed_all(seed)
+    # CPU의 random seed 고정
     torch.manual_seed(seed)
 
 def getFileName():
     if world.model_name == 'mf':
+        # f-string 문자열 포맷팅
         file = f"mf-{world.dataset}-{world.config['latent_dim_rec']}.pth.tar"
     elif world.model_name == 'lgn':
         file = f"lgn-{world.dataset}-{world.config['lightGCN_n_layers']}-{world.config['latent_dim_rec']}.pth.tar"
+    # os에 맞게 경로 결합
     return os.path.join(world.FILE_PATH,file)
 
+# *args 일반 가변인자 -> 여러 값이 튜플 형식으로 전달 ex) var_args_ex('hello','world',2023)
+# **args 키워드 가변인자 -> 여러 키워드 인자가 딕셔너리 형식으로 전달 ex) var_args_ex(name='world',age=2023)
 def minibatch(*tensors, **kwargs):
 
+    # dict.get(key, default): 키가 없으면 기본값 반환 
     batch_size = kwargs.get('batch_size', world.config['bpr_batch_size'])
 
     if len(tensors) == 1:
         tensor = tensors[0]
         for i in range(0, len(tensor), batch_size):
+            # yield:  return과 달리 값을 여러 번 반환할 수 있음
+            # 슬라이싱하여 batch_size만큼의 데이터 반환
             yield tensor[i:i + batch_size]
     else:
+        # batch_size만큼의 반복하여 i 인덱스 i 지정
         for i in range(0, len(tensors[0]), batch_size):
+            # 모든 tensors의 i ~ i+batch_size 인덱스 슬라이싱하여 tuple로 반환
             yield tuple(x[i:i + batch_size] for x in tensors)
 
-
+# 여러 배열을 동일한 순서로 섞는 함수
 def shuffle(*arrays, **kwargs):
 
+    # dict.get(key, default): 키가 없으면 기본값 반환, 기본값이 False 
     require_indices = kwargs.get('indices', False)
 
     if len(set(len(x) for x in arrays)) != 1:

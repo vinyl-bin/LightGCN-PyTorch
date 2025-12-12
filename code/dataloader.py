@@ -64,6 +64,12 @@ class BasicDataset(Dataset):
         A = 
             |I,   R|
             |R^T, I|
+        ---------------------
+        사용자-아이템 상호작용 그래프를 희소 텐서로 생성
+        NGCF 논문의 행렬 형태를 따름:
+        A = |I,   R  |
+            |R^T, I  |
+        여기서 I는 단위행렬, R은 사용자-아이템 상호작용 행렬    
         """
         raise NotImplementedError
 
@@ -72,6 +78,10 @@ class LastFM(BasicDataset):
     Dataset type for pytorch \n
     Incldue graph information
     LastFM dataset
+
+    LastFM 데이터셋 클래스
+    음악 추천을 위한 LastFM 데이터셋 로드 및 처리
+    사용자-아티스트 상호작용 정보와 그래프 구조 포함
     """
     def __init__(self, path="../data/lastfm"):
         # train or test
@@ -138,15 +148,22 @@ class LastFM(BasicDataset):
         return self._allPos
 
     def getSparseGraph(self):
+        """
+        사용자-아이템 상호작용 그래프를 정규화된 희소 텐서로 생성
+        D^{-0.5} * A * D^{-0.5} 형태로 정규화 (대칭 정규화)
+        """
         if self.Graph is None:
             user_dim = torch.LongTensor(self.trainUser)
             item_dim = torch.LongTensor(self.trainItem)
             
+            # 사용자-아이템 연결 생성 (양방향)
             first_sub = torch.stack([user_dim, item_dim + self.n_users])
             second_sub = torch.stack([item_dim+self.n_users, user_dim])
             index = torch.cat([first_sub, second_sub], dim=1)
             data = torch.ones(index.size(-1)).int()
             self.Graph = torch.sparse.IntTensor(index, data, torch.Size([self.n_users+self.m_items, self.n_users+self.m_items]))
+            
+            # 정규화: D^{-0.5} * A * D^{-0.5}
             dense = self.Graph.to_dense()
             D = torch.sum(dense, dim=1).float()
             D[D==0.] = 1.
@@ -219,6 +236,10 @@ class Loader(BasicDataset):
     Dataset type for pytorch \n
     Incldue graph information
     gowalla dataset
+
+    범용 데이터셋 로더
+    Gowalla, Yelp2018, Amazon-Book 등의 데이터셋 로드 및 처리
+    텍스트 파일에서 데이터를 읽어와 그래프 구조 생성
     """
 
     def __init__(self,config = world.config,path="../data/gowalla"):
@@ -238,12 +259,13 @@ class Loader(BasicDataset):
         self.traindataSize = 0
         self.testDataSize = 0
 
+        # 텍스트 파일에서 학습 데이터 로드
         with open(train_file) as f:
             for l in f.readlines():
                 if len(l) > 0:
                     l = l.strip('\n').split(' ')
-                    items = [int(i) for i in l[1:]]
-                    uid = int(l[0])
+                    items = [int(i) for i in l[1:]]  # 아이템 목록
+                    uid = int(l[0])  # 사용자 ID
                     trainUniqueUsers.append(uid)
                     trainUser.extend([uid] * len(items))
                     trainItem.extend(items)
@@ -254,6 +276,7 @@ class Loader(BasicDataset):
         self.trainUser = np.array(trainUser)
         self.trainItem = np.array(trainItem)
 
+        # 텍스트 파일에서 테스트 데이터 로드
         with open(test_file) as f:
             for l in f.readlines():
                 if len(l) > 0:
@@ -278,13 +301,16 @@ class Loader(BasicDataset):
         print(f"{world.dataset} Sparsity : {(self.trainDataSize + self.testDataSize) / self.n_users / self.m_items}")
 
         # (users,items), bipartite graph
+        # 사용자-아이템 상호작용 행렬 생성 (CSR 형식)
         self.UserItemNet = csr_matrix((np.ones(len(self.trainUser)), (self.trainUser, self.trainItem)),
                                       shape=(self.n_user, self.m_item))
+        # 정규화를 위한 Degree 계산
         self.users_D = np.array(self.UserItemNet.sum(axis=1)).squeeze()
         self.users_D[self.users_D == 0.] = 1
         self.items_D = np.array(self.UserItemNet.sum(axis=0)).squeeze()
         self.items_D[self.items_D == 0.] = 1.
         # pre-calculate
+        # 사전 계산
         self._allPos = self.getUserPosItems(list(range(self.n_user)))
         self.__testDict = self.__build_test()
         print(f"{world.dataset} is ready to go")
@@ -330,23 +356,36 @@ class Loader(BasicDataset):
         return torch.sparse.FloatTensor(index, data, torch.Size(coo.shape))
         
     def getSparseGraph(self):
+        """
+        정규화된 사용자-아이템 인접 행렬 생성 및 로드
+        
+        기존 .npz 파일이 있으면 로드하고, 없으면 새로 생성하여 저장
+        정규화: D^{-0.5} * A * D^{-0.5}
+        
+        Returns:
+            희소 텐서 형태의 정규화된 인접 행렬
+        """
         print("loading adjacency matrix")
         if self.Graph is None:
             try:
+                # 기존 저장된 행렬 로드 시도
                 pre_adj_mat = sp.load_npz(self.path + '/s_pre_adj_mat.npz')
                 print("successfully loaded...")
                 norm_adj = pre_adj_mat
             except :
+                # 새로 인접 행렬 생성
                 print("generating adjacency matrix")
                 s = time()
                 adj_mat = sp.dok_matrix((self.n_users + self.m_items, self.n_users + self.m_items), dtype=np.float32)
                 adj_mat = adj_mat.tolil()
                 R = self.UserItemNet.tolil()
+                # 사용자-아이템 연결 추가
                 adj_mat[:self.n_users, self.n_users:] = R
                 adj_mat[self.n_users:, :self.n_users] = R.T
                 adj_mat = adj_mat.todok()
                 # adj_mat = adj_mat + sp.eye(adj_mat.shape[0])
                 
+                # 대칭 정규화: D^{-0.5} * A * D^{-0.5}
                 rowsum = np.array(adj_mat.sum(axis=1))
                 d_inv = np.power(rowsum, -0.5).flatten()
                 d_inv[np.isinf(d_inv)] = 0.
@@ -359,6 +398,7 @@ class Loader(BasicDataset):
                 print(f"costing {end-s}s, saved norm_mat...")
                 sp.save_npz(self.path + '/s_pre_adj_mat.npz', norm_adj)
 
+            # 희소 텐서로 변환 (메모리 효율성을 위해 분할 옵션)
             if self.split == True:
                 self.Graph = self._split_A_hat(norm_adj)
                 print("done split matrix")
