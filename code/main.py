@@ -55,7 +55,7 @@ try:
         if epoch %10 == 0:
             cprint("[TEST]")
             Procedure.Test(dataset, Recmodel, epoch, w, world.config['multicore'])
-        # BPR 학습 수행
+        # 학습 수행
         output_information = Procedure.BPR_train_original(dataset, Recmodel, bpr, epoch, neg_k=Neg_k,w=w)
         print(f'EPOCH[{epoch+1}/{world.TRAIN_epochs}] {output_information}')
         # 매 epoch마다 모델 가중치 저장
